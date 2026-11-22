@@ -1,0 +1,60 @@
+---
+- name: Resolve Debian arch
+  ansible.builtin.set_fact:
+    deb_arch: "{{ {'aarch64': 'arm64', 'x86_64': 'amd64'}[ansible_facts['architecture']] }}"
+
+- name: Keyrings dir
+  ansible.builtin.file:
+    path: /etc/apt/keyrings
+    state: directory
+    mode: "0755"
+
+- name: Docker + gVisor apt keys (ASCII-armored, apt accepts .asc)
+  ansible.builtin.get_url:
+    url: "{{ item.url }}"
+    dest: "/etc/apt/keyrings/{{ item.name }}.asc"
+    mode: "0644"
+  loop:
+    - { name: docker, url: "https://download.docker.com/linux/ubuntu/gpg" }
+    - { name: gvisor, url: "https://gvisor.dev/archive.key" }
+
+- name: Docker + gVisor apt repos (deb822)
+  ansible.builtin.deb822_repository:
+    name: "{{ item.name }}"
+    types: [deb]
+    uris: "{{ item.uri }}"
+    suites: ["{{ item.suite }}"]
+    components: ["{{ item.component }}"]
+    architectures: ["{{ deb_arch }}"]
+    signed_by: "/etc/apt/keyrings/{{ item.name }}.asc"
+  loop:
+    - { name: docker, uri: "https://download.docker.com/linux/ubuntu", suite: "{{ ansible_facts['distribution_release'] }}", component: stable }
+    - { name: gvisor, uri: "https://storage.googleapis.com/gvisor/releases", suite: release, component: main }
+
+- name: Install Docker engine + gVisor
+  ansible.builtin.apt:
+    name:
+      - docker-ce
+      - docker-ce-cli
+      - containerd.io
+      - docker-buildx-plugin
+      - docker-compose-plugin
+      - runsc
+    state: present
+    update_cache: true
+
+- name: Docker daemon config (registers runsc runtime)
+  ansible.builtin.template:
+    src: daemon.json.j2
+    dest: /etc/docker/daemon.json
+    mode: "0644"
+  notify: Restart docker
+
+- name: Enable docker
+  ansible.builtin.service:
+    name: docker
+    state: started
+    enabled: true
+
+- name: Apply daemon config before the stack starts
+  ansible.builtin.meta: flush_handlers

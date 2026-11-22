@@ -1,0 +1,185 @@
+name: mcp
+
+x-hardening: &hardening
+  restart: unless-stopped
+  security_opt: ["no-new-privileges:true"]
+  cap_drop: [ALL]
+
+# One gateway container per Gemini app (see gateway/apps/README.md).
+x-gateway: &gateway
+  <<: *hardening
+  image: mcp-gateway:local
+  build: ./gateway
+  read_only: true
+  tmpfs: [/tmp]
+  # Not published: only reachable through Caddy.
+  healthcheck:
+    test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=3)"]
+    interval: 15s
+    timeout: 5s
+    retries: 5
+    start_period: 20s
+
+# OpenShell state must be bind-mounted at the SAME absolute path on host and in the
+# gateway container: the host Docker daemon resolves the supervisor binary path the
+# gateway hands it. Default /var/lib/openshell; local dev overrides it.
+x-openshell-data: &openshell-data
+  type: bind
+  source: ${OPENSHELL_DATA_DIR:-/var/lib/openshell}
+  target: ${OPENSHELL_DATA_DIR:-/var/lib/openshell}
+  bind:
+    create_host_path: true
+
+x-openshell-image: &openshell-image ghcr.io/nvidia/openshell/gateway:0.1.8
+
+services:
+  caddy:
+    <<: *hardening
+    image: caddy:2.11-alpine
+    cap_add: [NET_BIND_SERVICE]
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      MCP_DOMAIN: ${MCP_DOMAIN:?MCP_DOMAIN is required}
+      ACME_EMAIL: ${ACME_EMAIL:?ACME_EMAIL is required}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks: [edge]
+    depends_on:
+      gw-sandbox:
+        condition: service_healthy
+
+  # https://<MCP_DOMAIN>/sandbox/mcp — OpenShell sandboxes as MCP tools.
+  # Holds the OpenShell client cert, never the GitHub PAT.
+  gw-sandbox:
+    <<: *gateway
+    env_file: [.env, .env.sandbox]
+    environment:
+      GATEWAY_APP: sandbox
+      BASE_URL: https://${MCP_DOMAIN}/sandbox
+      OPENSHELL_ENDPOINT: openshell-gateway:8080
+      OPENSHELL_TLS_DIR: /openshell-client
+      SANDBOX_IMAGE: mcp-sandbox:local
+    volumes:
+      - gw_sandbox_data:/data
+      - openshell_client:/openshell-client:ro
+    networks: [edge, openshell]
+    depends_on:
+      openshell-setup:
+        condition: service_completed_successfully
+      sandbox-image:
+        condition: service_completed_successfully
+
+  # ---- OpenShell (sandbox control plane) ----------------------------------------------
+
+  # One-shot: CA, server/client certs and sandbox JWT keys. Keeps existing files.
+  openshell-init:
+    image: *openshell-image
+    user: "0"
+    restart: "no"
+    command: ["generate-certs", "--server-san", "openshell-gateway",
+              "--output-dir", "${OPENSHELL_DATA_DIR:-/var/lib/openshell}/tls"]
+    environment:
+      HOME: ${OPENSHELL_DATA_DIR:-/var/lib/openshell}
+    volumes: [*openshell-data]
+    network_mode: none
+
+  # One-shot: hand ONLY the client bundle to the non-root gateway user (uid 10001).
+  openshell-client-certs:
+    image: alpine:3.22
+    restart: "no"
+    network_mode: none
+    depends_on:
+      openshell-init:
+        condition: service_completed_successfully
+    volumes:
+      - type: bind
+        source: ${OPENSHELL_DATA_DIR:-/var/lib/openshell}/tls
+        target: /src
+        read_only: true
+      - openshell_client:/dst
+    command:
+      - sh
+      - -euc
+      - |
+        cp /src/ca.crt /src/client/tls.crt /src/client/tls.key /dst/
+        chown 10001:10001 /dst/*
+        chmod 0444 /dst/ca.crt /dst/tls.crt
+        chmod 0400 /dst/tls.key
+
+  # Has the host Docker socket (root-equivalent), so: no internet-facing network, mTLS
+  # required for every API call, published on host loopback only (sandbox supervisors
+  # use host networking to call back).
+  openshell-gateway:
+    image: *openshell-image
+    restart: unless-stopped
+    user: "0"
+    command: []
+    security_opt: ["no-new-privileges:true"]
+    depends_on:
+      openshell-init:
+        condition: service_completed_successfully
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - *openshell-data
+      - type: bind
+        source: ./openshell/gateway.toml
+        target: /etc/openshell/gateway.toml
+        read_only: true
+    environment:
+      OPENSHELL_GATEWAY_CONFIG: /etc/openshell/gateway.toml
+      OPENSHELL_DB_URL: "sqlite:${OPENSHELL_DATA_DIR:-/var/lib/openshell}/gateway.db?mode=rwc"
+      OPENSHELL_LOCAL_TLS_DIR: ${OPENSHELL_DATA_DIR:-/var/lib/openshell}/tls
+      XDG_DATA_HOME: ${OPENSHELL_DATA_DIR:-/var/lib/openshell}
+      HOME: ${OPENSHELL_DATA_DIR:-/var/lib/openshell}
+    networks: [openshell, openshell_host]
+
+  # One-shot on every deploy: GitHub provider profile + provider (from the PAT).
+  # The only container that ever sees the PAT.
+  openshell-setup:
+    image: mcp-gateway:local
+    restart: "no"
+    read_only: true
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+    command: ["python", "openshell_setup.py"]
+    env_file: [.env.openshell-setup]
+    environment:
+      OPENSHELL_ENDPOINT: openshell-gateway:8080
+      OPENSHELL_TLS_DIR: /openshell-client
+    volumes:
+      - openshell_client:/openshell-client:ro
+    networks: [openshell]
+    depends_on:
+      openshell-gateway:
+        condition: service_started
+      openshell-client-certs:
+        condition: service_completed_successfully
+
+  # Build-only: the sandbox workload image (git, gh, python, node). Exits immediately.
+  sandbox-image:
+    image: mcp-sandbox:local
+    build: ./sandbox-image
+    restart: "no"
+    network_mode: none
+    entrypoint: ["true"]
+
+networks:
+  edge: {}
+  # gw-sandbox / openshell-setup <-> openshell-gateway only. No route to the internet.
+  openshell:
+    internal: true
+  # Exists only so the gateway port can be published to host loopback.
+  openshell_host: {}
+
+volumes:
+  caddy_data: {}
+  caddy_config: {}
+  gw_sandbox_data: {}
+  openshell_client: {}

@@ -1,0 +1,42 @@
+# Adapted from NVIDIA/OpenShell providers/github.yaml (Apache-2.0), v0.1.8.
+# Changes: `binaries` narrowed to the apt-installed paths in services/sandbox-image.
+#
+# The PAT never enters a sandbox: sandboxes see an opaque placeholder in GITHUB_TOKEN/GH_TOKEN,
+# and the OpenShell proxy swaps in the real token only on requests to the endpoints below,
+# made by the binaries below. Read-only by default; push and PR writes are granted per repo
+# by the sandbox policy (openshell_common.build_policy).
+id: github
+display_name: GitHub
+description: GitHub API and Git operations
+category: source_control
+credentials:
+  - name: api_token
+    description: GitHub token
+    env_vars: [GITHUB_TOKEN, GH_TOKEN]
+    required: true
+    auth_style: bearer
+    header_name: authorization
+discovery:
+  credentials: [api_token]
+endpoints:
+  - host: api.github.com
+    port: 443
+    protocol: rest
+    access: read-only
+    enforcement: enforce
+  - host: api.github.com
+    port: 443
+    path: /graphql
+    protocol: graphql
+    access: read-only
+    enforcement: enforce
+  - host: github.com
+    port: 443
+    protocol: rest
+    enforcement: enforce
+    rules:
+      - allow: { method: GET, path: "**" }
+      - allow: { method: HEAD, path: "**" }
+      - allow: { method: OPTIONS, path: "**" }
+      - allow: { method: POST, path: "/**/git-upload-pack" }
+binaries: [/usr/bin/gh, /usr/bin/git]

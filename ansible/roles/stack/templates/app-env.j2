@@ -1,0 +1,9 @@
+# {{ ansible_managed }}
+# Only the gw-{{ item.name }} container loads this file.
+
+# Per-app signing key derived from the master: a token minted for one app can't be
+# replayed against another, and rotating the master rotates them all.
+GATEWAY_JWT_SIGNING_KEY={{ (gateway_jwt_signing_key ~ ':' ~ item.name) | hash('sha256') }}
+{% for key, value in (item.env | default({})).items() %}
+{{ key }}={{ value }}
+{% endfor %}

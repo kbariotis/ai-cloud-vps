@@ -1,0 +1,40 @@
+---
+admin_user: ops
+
+# The MCP subdomain. Create A/AAAA for it at your current DNS provider (tofu output dns_records);
+# nothing else in your domain changes. Apps: https://<mcp_domain>/<app>/mcp (one Gemini app each).
+mcp_domain: mcp.example.com
+
+# Let's Encrypt account email (Caddy). Used for the ACME account, not for anything public.
+acme_email: you@example.com
+
+# The ONE Google account allowed to authorize. Everyone else is rejected by the gateway.
+allowed_email: you@example.com
+
+# Repos the sandboxes may push branches to and open/update PRs on (owner/repo).
+# Everything else on GitHub is read-only (clone/fetch, REST/GraphQL reads). Pair this with
+# branch protection on main so changes still land through PRs you merge.
+sandbox_push_repos: []
+#  - your-user/your-repo
+
+# Must match the gw-<name> services in services/compose.yaml. `env` is written only to
+# that app's .env.<name> (never shared). Secrets don't belong here unless that one app
+# needs them: the GitHub PAT goes only to the openshell-setup job (.env.openshell-setup).
+mcp_apps:
+  - name: sandbox
+    env:
+      SANDBOX_PUSH_REPOS: "{{ sandbox_push_repos | join(',') }}"
+      SANDBOX_ATTACH_GITHUB: "{{ (github_pat | default('') | length > 0) | lower }}"
+      SANDBOX_MAX: "3"
+      SANDBOX_TTL_HOURS: "24"
+      SANDBOX_CPU: "2"
+      SANDBOX_MEMORY: "4Gi"
+
+# OAuth clients may only register redirect URIs matching these (FastMCP wildcard syntax).
+# Gemini's callback host, per community reports — confirm in `docker compose logs gw-sandbox`
+# on first connect; a rejected registration means this needs adjusting.
+allowed_client_redirect_uris:
+  - "https://oauth-redirect.googleusercontent.com/*"
+
+mcp_stack_dir: /opt/mcp
+secrets_file: "{{ playbook_dir }}/../secrets/secrets.sops.yaml"

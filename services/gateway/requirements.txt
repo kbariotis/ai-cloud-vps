@@ -1,0 +1,7 @@
+# Exact pins; verified locally (make local-up && make local-smoke && make local-test).
+fastmcp==4.2.1
+# Provides `uvx` for launching stdio MCP servers (pin their versions in apps/<app>.json).
+uv==0.13.9
+# Must match the OpenShell gateway version in services/compose.yaml.
+openshell==0.1.8
+PyYAML==6.0.3

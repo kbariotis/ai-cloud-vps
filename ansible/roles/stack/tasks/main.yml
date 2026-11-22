@@ -1,0 +1,69 @@
+---
+- name: Stack directory
+  ansible.builtin.file:
+    path: "{{ mcp_stack_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0750"
+
+- name: Sync service definitions
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../services/"
+    dest: "{{ mcp_stack_dir }}/"
+    owner: root
+    group: root
+    mode: u=rwX,g=rX,o=
+  notify: Recreate stack
+
+- name: Render .env (secrets live only here, root-only)
+  ansible.builtin.template:
+    src: env.j2
+    dest: "{{ mcp_stack_dir }}/.env"
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+  notify: Recreate stack
+
+- name: Render per-app .env.<app> (upstream secrets scoped to one container)
+  ansible.builtin.template:
+    src: app-env.j2
+    dest: "{{ mcp_stack_dir }}/.env.{{ item.name }}"
+    owner: root
+    group: root
+    mode: "0600"
+  loop: "{{ mcp_apps }}"
+  loop_control:
+    label: "{{ item.name }}"
+  no_log: true
+  notify: Recreate stack
+
+- name: Render .env.openshell-setup (the GitHub PAT; read only by the one-shot setup job)
+  ansible.builtin.template:
+    src: openshell-setup-env.j2
+    dest: "{{ mcp_stack_dir }}/.env.openshell-setup"
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+  notify: Recreate stack
+
+# One-shot services (cert init/copy, OpenShell setup, sandbox image build) re-run on every
+# `up` by design (e.g. to apply a rotated PAT); only report a change when a long-running
+# service changed, so a no-op deploy shows changed=0.
+- name: Bring stack up
+  community.docker.docker_compose_v2:
+    project_src: "{{ mcp_stack_dir }}"
+    build: always
+    pull: missing
+    remove_orphans: true
+    state: present
+    wait: true
+    wait_timeout: 300
+  register: stack_up
+  changed_when: >-
+    stack_up.actions | default([])
+    | selectattr('what', 'equalto', 'container')
+    | rejectattr('id', 'search', 'openshell-(init|client-certs|setup)|sandbox-image')
+    | list | length > 0

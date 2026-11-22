@@ -1,0 +1,8 @@
+# cp hosts.yml.example hosts.yml  (gitignored)
+all:
+  hosts:
+    mcp:
+      # Public IPv4 from `tofu -chdir=infra output -raw ipv4`. Port 22 is only open while
+      # `make deploy` / `make ssh-open` has opened it to your current IP.
+      ansible_host: 203.0.113.20
+      ansible_user: ops

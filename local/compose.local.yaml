@@ -1,0 +1,19 @@
+# Local run (see Makefile `local-up`). Caddy serves https://localhost:8443/<app>/mcp using its
+# internal CA (automatic for localhost — no ACME). Gateways use local/.env + local/.env.<app>.
+# OPENSHELL_DATA_DIR (in local/.env) points at local/.tmp/openshell-data: Docker Desktop
+# shares /Users, and the path must be identical on host and in the gateway container.
+services:
+  caddy:
+    ports: !override
+      - "127.0.0.1:8443:8443"
+    environment:
+      MCP_DOMAIN: localhost:8443
+
+  gw-sandbox:
+    env_file: !override
+      - ../local/.env
+      - ../local/.env.sandbox
+
+  openshell-setup:
+    env_file: !override
+      - ../local/.env.openshell-setup

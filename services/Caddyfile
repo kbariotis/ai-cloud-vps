@@ -1,0 +1,44 @@
+{
+	email {$ACME_EMAIL}
+}
+
+(common) {
+	request_body {
+		max_size 10MB
+	}
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "no-referrer"
+		-Server
+	}
+}
+
+# One Gemini app at https://<domain>/<prefix>/mcp, served by <upstream> whose BASE_URL is
+# https://<domain>/<prefix> (prefix = "<app>"). The gateway expects its routes with the prefix stripped,
+# but the OAuth discovery documents live under the host root:
+#   RFC 9728  /.well-known/oauth-protected-resource/<name>/mcp  -> passed through as-is
+#   RFC 8414  /.well-known/oauth-authorization-server/<name>    -> rewritten to the gateway's root doc
+# Caddy auto-flushes text/event-stream (Streamable HTTP), so no flush_interval is needed.
+(mcp_app) {
+	handle /.well-known/oauth-protected-resource/{args[0]}/* {
+		reverse_proxy {args[1]}
+	}
+	handle /.well-known/oauth-authorization-server/{args[0]} {
+		rewrite * /.well-known/oauth-authorization-server
+		reverse_proxy {args[1]}
+	}
+	handle_path /{args[0]}/* {
+		reverse_proxy {args[1]}
+	}
+}
+
+{$MCP_DOMAIN} {
+	import common
+	import mcp_app sandbox gw-sandbox:8000
+
+	# Anything else on the MCP subdomain.
+	handle {
+		respond 404
+	}
+}

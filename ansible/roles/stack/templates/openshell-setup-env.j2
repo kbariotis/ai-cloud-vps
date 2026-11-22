@@ -1,0 +1,4 @@
+# {{ ansible_managed }}
+# Only the one-shot openshell-setup container loads this file. It registers the PAT as an
+# OpenShell provider; sandboxes and the internet-facing gateway only ever see a placeholder.
+GITHUB_TOKEN={{ github_pat | default('') }}

@@ -1,0 +1,16 @@
+---
+- name: Configure MCP host
+  hosts: all
+  become: true
+
+  pre_tasks:
+    - name: Load sops-encrypted secrets (action plugin, decrypts on the controller only)
+      community.sops.load_vars:
+        file: "{{ secrets_file }}"
+      no_log: true
+      tags: [always]
+
+  roles:
+    - { role: base, tags: [base] }
+    - { role: docker, tags: [docker] }
+    - { role: stack, tags: [stack] }

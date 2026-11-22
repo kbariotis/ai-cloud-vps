@@ -1,0 +1,28 @@
+# OpenShell gateway (v0.1.8), Docker compute driver. Based on NVIDIA/OpenShell
+# deploy/docker/gateway.toml (Apache-2.0), with mTLS ON instead of the upstream
+# plaintext/unauthenticated default.
+#
+# Reachability:
+#   - compose network `openshell` (internal): only gw-sandbox and openshell-setup, both
+#     holding the client cert from the `openshell_client` volume.
+#   - 127.0.0.1:8080 on the host: sandbox supervisors use host networking and call back here.
+# Certs, CA and sandbox JWT keys come from OPENSHELL_LOCAL_TLS_DIR (written by openshell-init).
+
+[openshell]
+version = 2
+
+[openshell.gateway]
+# Inside the container's own network namespace; published to host loopback only.
+bind_address        = "0.0.0.0:8080"
+health_bind_address = "0.0.0.0:8081"
+log_level           = "info"
+compute_driver      = "docker"
+
+[openshell.drivers.docker]
+default_image         = "nvcr.io/nvidia/base/ubuntu:24.04"
+sandbox_runtime_image = "ghcr.io/nvidia/openshell/sandbox:0.1.8"
+supervisor_image      = "ghcr.io/nvidia/openshell/supervisor:0.1.8"
+image_pull_policy     = "if_not_present"
+sandbox_label         = "openshell"
+# Supervisor-compatible default (upstream); OpenShell applies Landlock + seccomp itself.
+app_armor_profile     = "Unconfined"

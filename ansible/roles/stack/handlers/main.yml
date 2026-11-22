@@ -1,0 +1,9 @@
+---
+- name: Recreate stack
+  community.docker.docker_compose_v2:
+    project_src: "{{ mcp_stack_dir }}"
+    build: always
+    recreate: always
+    state: present
+    wait: true
+    wait_timeout: 180
