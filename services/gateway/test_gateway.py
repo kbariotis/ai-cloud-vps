@@ -327,6 +327,38 @@ async def test_sandbox_error_messages() -> None:
     print("PASS  sandbox error messages (fixable reasons surfaced; internals generic; one line, bounded)")
 
 
+async def test_tool_metadata() -> None:
+    import time
+
+    import sandbox_tools as st
+    from fastmcp.exceptions import ToolError
+
+    ours = {st.OWNER_LABEL: st.OWNER_VALUE, st.CREATED_LABEL: str(int(time.time()))}
+    with patch.dict(os.environ, {"SANDBOX_PUSH_REPOS": "me/app"}):
+        backend = st.SandboxBackend(st.Settings(), FakeOpenShell([_Ref("mine-1", ours)]))
+    async with Client(st.build_sandbox_server(backend)) as c:
+        tools = {t.name: t for t in await c.list_tools()}
+        # What the approval card can show: a title, honest hints, and the agent's stated purpose
+        assert tools["exec"].title == "Run shell command in sandbox"
+        assert tools["exec"].annotations.destructive_hint is True and tools["exec"].annotations.open_world_hint is True
+        assert tools["list"].annotations.read_only_hint is True and tools["read_file"].annotations.read_only_hint is True
+        assert tools["delete"].annotations.destructive_hint is True
+        for name in ("exec", "write_file"):
+            schema = tools[name].input_schema
+            assert "purpose" in schema["required"] and next(iter(schema["properties"])) == "purpose", schema
+
+        for bad in ["", "   ", "x" * (st.MAX_PURPOSE + 1)]:
+            try:
+                await c.call_tool("exec", {"purpose": bad, "sandbox": "mine-1", "command": "true"})
+            except ToolError as exc:
+                assert "purpose" in str(exc), str(exc)
+            else:
+                raise AssertionError(f"purpose {bad[:10]!r} accepted")
+        # Multi-line purposes are collapsed to one line, not rejected
+        await c.call_tool("exec", {"purpose": "Run\ntests", "sandbox": "mine-1", "command": "true"})
+    print("PASS  tool metadata (titles, hints, required one-line purpose on exec/write_file)")
+
+
 def test_sandbox_backend_safety() -> None:
     import time
 
@@ -390,4 +422,5 @@ if __name__ == "__main__":
     test_sandbox_config_and_policy()
     test_sandbox_backend_safety()
     asyncio.run(test_sandbox_error_messages())
+    asyncio.run(test_tool_metadata())
     print("ALL GATEWAY TESTS PASSED")

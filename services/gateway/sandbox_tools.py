@@ -52,6 +52,7 @@ MAX_OUTPUT = 64 * 1024  # per stream returned to the client
 MAX_WRITE = 1024 * 1024  # OpenShell buffers at most 4 MiB of stdin per exec
 MAX_READ = 256 * 1024
 MAX_TIMEOUT = 600
+MAX_PURPOSE = 200  # chars of the agent's one-line "why", shown on the approval card
 
 
 class Settings:
@@ -239,7 +240,18 @@ def build_sandbox_server(backend: SandboxBackend | None = None) -> FastMCP:
     repos = ", ".join(settings.push_repos) or "(none configured)"
     mcp = FastMCP("sandbox")
 
-    @mcp.tool
+    def checked_purpose(purpose: str) -> str:
+        text = " ".join((purpose or "").split())  # one line: it's shown on the approval card
+        if not text or len(text) > MAX_PURPOSE:
+            raise ToolError(f"purpose: one plain sentence (1-{MAX_PURPOSE} chars) saying what this does and why")
+        return text
+
+    # Titles and hints feed the client's approval UI (Gemini shows a card per call). Hints are
+    # advisory: they describe the tool honestly, they don't grant or block anything.
+    @mcp.tool(
+        title="Create sandbox",
+        annotations={"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": True},
+    )
     async def create(name_hint: str | None = None) -> dict[str, Any]:
         """Create an isolated Linux sandbox (Ubuntu, git, gh, python3, node).
 
@@ -249,32 +261,56 @@ def build_sandbox_server(backend: SandboxBackend | None = None) -> FastMCP:
         """
         return await call("create", name_hint)
 
-    @mcp.tool
+    @mcp.tool(title="List sandboxes", annotations={"readOnlyHint": True, "openWorldHint": False})
     async def list() -> list[dict[str, Any]]:  # noqa: A001 - tool name
         """List this gateway's sandboxes with phase and age."""
         return await call("list")
 
-    @mcp.tool
-    async def exec(sandbox: str, command: str, workdir: str = WORKDIR, timeout_seconds: int = 120) -> dict[str, Any]:  # noqa: A001
+    # destructiveHint: a command can push to the allowlisted repos and open PRs.
+    @mcp.tool(
+        title="Run shell command in sandbox",
+        annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True},
+    )
+    async def exec(  # noqa: A001
+        purpose: str, sandbox: str, command: str, workdir: str = WORKDIR, timeout_seconds: int = 120
+    ) -> dict[str, Any]:
         """Run a bash command in a sandbox and return exit code, stdout and stderr.
+
+        `purpose` is shown to the human approving this call: one plain sentence saying what
+        the command does and why, naming any repo/branch it pushes to (e.g. "Push branch
+        fix-typo to me/site and open a PR"). Be specific and truthful.
 
         Use for building, testing and git. Clone with https://github.com/<owner>/<repo>.git.
         Push a branch with `git push origin <branch>`; open a PR with
         `gh api -X POST /repos/<owner>/<repo>/pulls -f title=... -f head=<branch> -f base=main`.
         """
+        why = checked_purpose(purpose)
+        log.info("exec in %s: %s", sandbox[:40], why)  # audit trail of intent (not the command)
         return await call("exec", sandbox, command, workdir, timeout_seconds)
 
-    @mcp.tool
-    async def write_file(sandbox: str, path: str, content: str) -> dict[str, Any]:
-        """Write a text file (absolute path, up to 1 MiB) inside a sandbox, creating parent dirs."""
+    @mcp.tool(
+        title="Write file in sandbox",
+        annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": True, "openWorldHint": False},
+    )
+    async def write_file(purpose: str, sandbox: str, path: str, content: str) -> dict[str, Any]:
+        """Write a text file (absolute path, up to 1 MiB) inside a sandbox, creating parent dirs.
+
+        `purpose` is shown to the human approving this call: one plain sentence saying what
+        the file is and why (e.g. "Add a unit test for the date parser").
+        """
+        why = checked_purpose(purpose)
+        log.info("write_file in %s: %s", sandbox[:40], why)
         return await call("write_file", sandbox, path, content)
 
-    @mcp.tool
+    @mcp.tool(title="Read file in sandbox", annotations={"readOnlyHint": True, "openWorldHint": False})
     async def read_file(sandbox: str, path: str, max_bytes: int = 65536) -> dict[str, Any]:
         """Read up to max_bytes (max 256 KiB) of a file inside a sandbox."""
         return await call("read_file", sandbox, path, max_bytes)
 
-    @mcp.tool
+    @mcp.tool(
+        title="Delete sandbox",
+        annotations={"readOnlyHint": False, "destructiveHint": True, "idempotentHint": True, "openWorldHint": False},
+    )
     async def delete(sandbox: str) -> dict[str, Any]:
         """Delete a sandbox and everything in it."""
         return await call("delete", sandbox)

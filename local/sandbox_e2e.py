@@ -39,12 +39,12 @@ async def main() -> None:
         check("create (long name hint)", sb.startswith("e2e-my-websi") and len(sb) <= 19, str(box))
 
         async def run(cmd: str, **kw):
-            return data(await c.call_tool("exec", {"sandbox": sb, "command": cmd, **kw}))
+            return data(await c.call_tool("exec", {"purpose": "e2e check", "sandbox": sb, "command": cmd, **kw}))
 
         r = await run("id -un; uname -m")
         check("exec as unprivileged user", r["exit_code"] == 0 and r["stdout"].startswith("ubuntu"), str(r))
 
-        await c.call_tool("write_file", {"sandbox": sb, "path": "/sandbox/app/main.py",
+        await c.call_tool("write_file", {"purpose": "e2e app file", "sandbox": sb, "path": "/sandbox/app/main.py",
                                           "content": "import six\nprint('ok', six.__version__)\n"})
         r = await run("python3 -m venv .v && .v/bin/pip install -q six==1.16.0 && .v/bin/python main.py",
                       workdir="/sandbox/app", timeout_seconds=300)
@@ -54,7 +54,7 @@ async def main() -> None:
         check("read_file", "import six" in rf["content"], str(rf))
 
         evil = "/sandbox/x/$(touch /sandbox/PWNED).txt"
-        await c.call_tool("write_file", {"sandbox": sb, "path": evil, "content": "x"})
+        await c.call_tool("write_file", {"purpose": "e2e injection probe", "sandbox": sb, "path": evil, "content": "x"})
         r = await run("ls /sandbox/PWNED 2>/dev/null && echo INJECTED || echo safe; ls /sandbox/x")
         check("write_file path is not shell-evaluated", "safe" in r["stdout"] and "$(touch" in r["stdout"], str(r))
 
@@ -84,16 +84,22 @@ async def main() -> None:
         check("list shows the sandbox", any(x["sandbox"] == sb for x in lst), str(lst))
 
         try:
-            await c.call_tool("exec", {"sandbox": "not-ours-xyz", "command": "true"})
+            await c.call_tool("exec", {"purpose": "e2e", "sandbox": "not-ours-xyz", "command": "true"})
             check("unknown sandbox rejected", False, "no error")
         except Exception as exc:  # noqa: BLE001
             check("unknown sandbox rejected", "no sandbox named" in str(exc), str(exc))
 
         try:
-            await c.call_tool("exec", {"sandbox": "../etc", "command": "true"})
+            await c.call_tool("exec", {"purpose": "e2e", "sandbox": "../etc", "command": "true"})
             check("bad sandbox name rejected", False, "no error")
         except Exception as exc:  # noqa: BLE001
             check("bad sandbox name rejected", "invalid sandbox name" in str(exc), str(exc))
+
+        try:
+            await c.call_tool("exec", {"purpose": "  ", "sandbox": sb, "command": "true"})
+            check("exec without a purpose rejected", False, "no error")
+        except Exception as exc:  # noqa: BLE001
+            check("exec without a purpose rejected", "purpose" in str(exc), str(exc))
 
         d = data(await c.call_tool("delete", {"sandbox": sb}))
         check("delete", d.get("deleted") == sb, str(d))
