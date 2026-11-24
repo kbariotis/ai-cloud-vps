@@ -35,7 +35,8 @@
     - name: Personal settings are filled in (inventory/host_vars/mcp.yml)
       ansible.builtin.assert:
         that:
-          - mcp_domain is not search('example\.com$')
+          # Label-anchored: mcp.example.com is a placeholder, mcp.myexample.com is not
+          - mcp_domain is not search('(^|\.)example\.com$')
           - acme_email is not search('@example\.com$')
           - allowed_email is not search('@example\.com$')
         fail_msg: >-

@@ -1,0 +1,10 @@
+---
+# Regression for the first Hetzner deploy: Ubuntu 24.04's socket-activated sshd leaves no
+# /run/sshd, and `sshd -t` refuses to run without it. ansible-test.sh deletes the directory,
+# proves `sshd -t` fails, then runs the real base role over `docker exec` (no SSH involved,
+# so sshd's own state can't recreate the directory) and expects it to succeed.
+- name: Base role with /run/sshd missing
+  hosts: all
+  gather_facts: true
+  roles:
+    - role: ../ansible/roles/base

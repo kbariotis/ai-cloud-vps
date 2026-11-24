@@ -36,9 +36,10 @@ ssh-open: require-hcloud ## Open SSH to your current public IPv4 (/32) only
 	echo "Opening SSH to $$ip/32"; \
 	tofu -chdir=$(INFRA) apply -auto-approve -input=false -target=hcloud_firewall.this -var "ssh_allowed_cidrs=[\"$$ip/32\"]" \
 	  || { echo "tofu failed to open SSH (see above)"; exit 1; }; \
-	host=$$(tofu -chdir=$(INFRA) output -raw ipv4) && [[ -n "$$host" ]] || { echo "no server ipv4 in tofu state"; exit 1; }; \
+	fail() { echo "$$1; closing SSH again"; $(MAKE) --no-print-directory -C "$(CURDIR)" ssh-close; exit 1; }; \
+	host=$$(tofu -chdir=$(INFRA) output -raw ipv4) && [[ -n "$$host" ]] || fail "no server ipv4 in tofu state"; \
 	for i in $$(seq 1 30); do nc -z -w 2 $$host 22 2>/dev/null && { echo "SSH reachable on $$host"; exit 0; }; sleep 2; done; \
-	echo "SSH still unreachable on $$host after 60s (firewall propagation?)"; exit 1
+	fail "SSH still unreachable on $$host after 60s (firewall propagation? sshd down?)"
 
 ssh-close: require-hcloud ## Close SSH again
 	tofu -chdir=$(INFRA) apply -auto-approve -input=false -target=hcloud_firewall.this -var 'ssh_allowed_cidrs=[]'
@@ -52,6 +53,7 @@ require-secrets:
 	  [[ -n "$$val" ]] || { echo "$$v is not set (see deploy.env.example)"; exit 1; }; \
 	  [[ "$$val" != op://* ]] || { echo "$$v is an unresolved op:// reference: run via 'op run --env-file=deploy.env -- make ...'"; exit 1; }; \
 	done
+	@(( $${#MCP_GATEWAY_JWT_SIGNING_KEY} >= 32 )) || { echo "MCP_GATEWAY_JWT_SIGNING_KEY must be >= 32 chars (openssl rand -hex 32)"; exit 1; }
 	@[[ "$${MCP_GITHUB_PAT:-}" != op://* ]] || { echo "MCP_GITHUB_PAT is an unresolved op:// reference"; exit 1; }
 	@[[ -n "$${MCP_GITHUB_PAT:-}" ]] || echo "note: MCP_GITHUB_PAT is empty, so sandboxes get no GitHub access"
 

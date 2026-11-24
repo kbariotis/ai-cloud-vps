@@ -146,10 +146,36 @@ async def test_registration_logging() -> None:
 
         assert await mcp.auth.get_client("nope") is None
         assert any("unknown OAuth client_id 'nope'" in m for m in records), records
+
+        # Flood: unauthenticated callers can't push unbounded lines into the log
+        records.clear()
+        mcp.auth._log_budget = gateway.LogBudget(limit=3, window=60)
+        for i in range(10):
+            await mcp.auth.get_client(f"junk-{i}")
+        assert sum("unknown OAuth client_id" in m for m in records) == 3, records
+        mcp.auth._log_budget.start -= 61  # window elapsed: the next event reports the drop count
+        await mcp.auth.get_client("junk-last")
+        assert any("suppressed 7 OAuth client log lines" in m for m in records), records
     finally:
         gateway.log.removeHandler(handler)
         gateway.log.setLevel(level)
-    print("PASS  registration logging (accepted/refused redirect URIs, unknown client ids; log-injection safe)")
+    print("PASS  registration logging (accepted/refused redirect URIs, unknown client ids; log-injection safe; flood-capped)")
+
+
+def test_access_log_redaction() -> None:
+    import logging
+
+    # Same shape uvicorn.access emits: (client, method, full_path, http_version, status)
+    rec = logging.LogRecord("uvicorn.access", logging.INFO, __file__, 1, '%s - "%s %s HTTP/%s" %d',
+                            ("1.2.3.4:5", "GET", "/auth/callback?code=4/SECRETCODE&state=abc", "1.1", 302), None)
+    assert gateway.RedactQuery().filter(rec)
+    msg = rec.getMessage()
+    assert "SECRETCODE" not in msg and "state=" not in msg and "/auth/callback?<redacted>" in msg, msg
+    plain = logging.LogRecord("uvicorn.access", logging.INFO, __file__, 1, '%s - "%s %s HTTP/%s" %d',
+                              ("1.2.3.4:5", "POST", "/mcp", "1.1", 401), None)
+    gateway.RedactQuery().filter(plain)
+    assert '"POST /mcp HTTP/1.1" 401' in plain.getMessage()
+    print("PASS  access log redaction (OAuth query strings dropped, plain paths kept)")
 
 
 async def test_stdio_backend() -> None:
@@ -304,6 +330,7 @@ if __name__ == "__main__":
     test_app_selection()
     asyncio.run(test_single_user())
     asyncio.run(test_registration_logging())
+    test_access_log_redaction()
     asyncio.run(test_stdio_backend())
     test_sandbox_config_and_policy()
     test_sandbox_backend_safety()

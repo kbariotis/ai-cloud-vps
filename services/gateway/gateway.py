@@ -17,6 +17,7 @@ import logging
 import os
 import re
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -28,6 +29,39 @@ from starlette.requests import Request
 from starlette.responses import PlainTextResponse
 
 log = logging.getLogger("gateway")
+
+
+class RedactQuery(logging.Filter):
+    """uvicorn's access log records full request paths, and OAuth URLs carry one-time
+    codes and state in the query (/auth/callback?code=...). Keep method, path and status;
+    drop the query."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        args = record.args
+        if isinstance(args, tuple) and len(args) >= 3 and isinstance(args[2], str) and "?" in args[2]:
+            record.args = (*args[:2], args[2].split("?", 1)[0] + "?<redacted>", *args[3:])
+        return True
+
+
+class LogBudget:
+    """At most `limit` log lines per `window` seconds for events anyone on the internet can
+    trigger (registration, unknown client ids); the excess is counted, then summarized."""
+
+    def __init__(self, limit: int = 20, window: float = 60.0) -> None:
+        self.limit, self.window = limit, window
+        self.start, self.count, self.dropped = time.monotonic(), 0, 0
+
+    def allow(self) -> bool:
+        now = time.monotonic()
+        if now - self.start >= self.window:
+            if self.dropped:
+                log.warning("suppressed %d OAuth client log lines in the last %ds", self.dropped, int(self.window))
+            self.start, self.count, self.dropped = now, 0, 0
+        self.count += 1
+        if self.count <= self.limit:
+            return True
+        self.dropped += 1
+        return False
 
 APPS_DIR = Path(__file__).with_name("apps")
 
@@ -162,6 +196,7 @@ class SingleUserGoogleProvider(GoogleProvider):
     def __init__(self, *, allowed_email: str, **kwargs: Any) -> None:
         super().__init__(**kwargs)
         self._allowed_email = allowed_email.lower()
+        self._log_budget = LogBudget()
 
     # Lowest hook every bearer check goes through:
     # BearerAuthBackend -> verify_token -> load_access_token (OAuthProxy) -> Google verifier.
@@ -180,21 +215,24 @@ class SingleUserGoogleProvider(GoogleProvider):
     # FastMCP tells a refused client *why* only in the HTTP response (Gemini just says
     # "redirect URL rejected"), so record what each registration asked for. Redirect URIs
     # and client ids aren't secrets; %r escapes them so a client can't forge log lines.
+    # These endpoints are unauthenticated, so the lines share a rate budget (LogBudget).
     async def register_client(self, client_info):  # type: ignore[override]
         uris = [str(u)[:300] for u in (client_info.redirect_uris or [])][:10]
         meta = (uris, client_info.token_endpoint_auth_method, client_info.application_type)
         try:
             await super().register_client(client_info)
         except Exception as exc:
-            reason = getattr(exc, "error_description", None) or type(exc).__name__
-            log.warning("client registration refused (%r): redirect_uris=%r auth=%r app_type=%r", reason, *meta)
+            if self._log_budget.allow():
+                reason = getattr(exc, "error_description", None) or type(exc).__name__
+                log.warning("client registration refused (%r): redirect_uris=%r auth=%r app_type=%r", reason, *meta)
             raise
-        log.info("client registered: redirect_uris=%r auth=%r app_type=%r", *meta)
+        if self._log_budget.allow():
+            log.info("client registered: redirect_uris=%r auth=%r app_type=%r", *meta)
 
     # Covers clients that skip registration (URL client ids / CIMD) or reuse a stale id.
     async def get_client(self, client_id: str):  # type: ignore[override]
         client = await super().get_client(client_id)
-        if client is None:
+        if client is None and self._log_budget.allow():
             log.warning("unknown OAuth client_id %r", client_id[:300])
         return client
 
@@ -246,6 +284,8 @@ def build_server() -> FastMCP:
 
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+    # Logger-level filter: survives uvicorn's dictConfig (it replaces handlers, not filters).
+    logging.getLogger("uvicorn.access").addFilter(RedactQuery())
     try:
         mcp = build_server()
     except ConfigError as exc:

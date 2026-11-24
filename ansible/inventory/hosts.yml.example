@@ -6,5 +6,8 @@ all:
       # `make deploy` / `make ssh-open` has opened it to your current IP.
       ansible_host: 203.0.113.20
       ansible_user: ops
-      # Private half of infra's ssh_public_key_path (non-default name, so ssh won't try it on its own).
+      # REQUIRED: ansible.cfg sets IdentitiesOnly=yes, so ssh offers only this key and never
+      # falls back to other agent keys. Point it at the private half of infra's
+      # ssh_public_key_path; if the key lives only in an agent (1Password, CI ssh-agent),
+      # point it at the .pub instead (~/.ssh/mcp_vps.pub) and ssh asks the agent for that key.
       ansible_ssh_private_key_file: ~/.ssh/mcp_vps

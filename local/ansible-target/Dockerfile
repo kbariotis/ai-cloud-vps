@@ -8,8 +8,9 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/* \
  && systemctl disable ssh.service \
  && systemctl enable ssh.socket
-# ^ like Ubuntu 24.04 cloud images (Hetzner): sshd is socket-activated, and /run (tmpfs at
-#   runtime) has no /run/sshd until something creates it
+# ^ like Ubuntu 24.04 cloud images (Hetzner): sshd is socket-activated. Ansible's own SSH
+#   login starts ssh.service, which creates /run/sshd, so the missing-directory case is
+#   tested separately (local/sshd-regression.yml, run by ansible-test.sh).
 
 
 # Same shape as cloud-init: key-only sudo user, no root login.

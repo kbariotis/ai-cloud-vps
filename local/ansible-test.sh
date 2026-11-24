@@ -19,7 +19,8 @@ cp "$TMP/id_ed25519.pub" local/ansible-target/authorized_keys
 # The PAT is well-formed but FAKE: it exercises the provider path; GitHub rejects it.
 export MCP_GOOGLE_OAUTH_CLIENT_ID=dummy.apps.googleusercontent.com
 export MCP_GOOGLE_OAUTH_CLIENT_SECRET=dummy-secret
-export MCP_GATEWAY_JWT_SIGNING_KEY=$(openssl rand -hex 32)
+signing_key=$(openssl rand -hex 32)  # assigned first: `export X=$(...)` would hide a failure from set -e
+export MCP_GATEWAY_JWT_SIGNING_KEY=$signing_key
 export MCP_GITHUB_PAT=github_pat_11HARNESSFAKE0harnessfakeharnessfakeharnessfakeharnessfakeharnessfake
 
 # Fresh target
@@ -76,6 +77,16 @@ docker exec "$NAME" bash -c '
   done
   grep -qF "$PAT" /opt/mcp/.env /opt/mcp/.env.sandbox && echo "PAT LEAKED to shared/app env!" || echo "PAT in .env/.env.sandbox: no"
 '
+
+echo "== regression: base role with /run/sshd missing (Hetzner's socket-activated sshd)"
+docker exec "$NAME" rm -rf /run/sshd
+if docker exec "$NAME" sshd -t 2>/dev/null; then
+  echo "precondition FAILED: sshd -t passes without /run/sshd, so this check proves nothing"; exit 1
+fi
+echo "precondition ok: sshd -t fails without /run/sshd"
+(cd ansible && ansible-playbook -i "$NAME," -c community.docker.docker -e admin_user=ops \
+  ../local/sshd-regression.yml) | tee "$TMP/run-sshd.log" | grep -E '^mcp-ansible-target .*ok=|fatal' || true
+grep -qE 'failed=0' "$TMP/run-sshd.log" && docker exec "$NAME" sshd -t && echo "PASS  base role recreates /run/sshd; sshd -t ok"
 
 echo "== sandbox e2e on the converged host (real OpenShell, nested Docker)"
 docker exec -i "$NAME" bash -c "cd /opt/mcp && docker compose exec -T gw-sandbox python -" < local/sandbox_e2e.py \
