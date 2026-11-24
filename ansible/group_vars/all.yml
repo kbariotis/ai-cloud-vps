@@ -1,6 +1,9 @@
 ---
 admin_user: ops
 
+# Placeholders only. Real values go in ansible/inventory/host_vars/mcp.yml (gitignored,
+# the repo is public); the deploy refuses to run while these example.com values are in effect.
+
 # The MCP subdomain. Create A/AAAA for it at your current DNS provider (tofu output dns_records);
 # nothing else in your domain changes. Apps: https://<mcp_domain>/<app>/mcp (one Gemini app each).
 mcp_domain: mcp.example.com
@@ -25,16 +28,23 @@ mcp_apps:
     env:
       SANDBOX_PUSH_REPOS: "{{ sandbox_push_repos | join(',') }}"
       SANDBOX_ATTACH_GITHUB: "{{ (github_pat | default('') | length > 0) | lower }}"
-      SANDBOX_MAX: "3"
+      SANDBOX_MAX: "2"
       SANDBOX_TTL_HOURS: "24"
-      SANDBOX_CPU: "2"
-      SANDBOX_MEMORY: "4Gi"
+      SANDBOX_CPU: "1"
+      SANDBOX_MEMORY: "1536Mi"
 
 # OAuth clients may only register redirect URIs matching these (FastMCP wildcard syntax).
-# Gemini's callback host, per community reports — confirm in `docker compose logs gw-sandbox`
-# on first connect; a rejected registration means this needs adjusting.
+# Exactly what gemini.google.com custom connectors register (observed 2026-11-24 via
+# `make logs`): ONE registration lists all six (3 Google hosts x /r/ and /a/), and a single
+# refused URI fails the whole registration. Scoped to the custom-MCP path prefix, so other
+# Google products' callbacks on the same hosts can't receive our authorization codes.
+# A refused registration is logged by the gateway ("client registration refused").
 allowed_client_redirect_uris:
-  - "https://oauth-redirect.googleusercontent.com/*"
+  - "https://oauth-redirect.googleusercontent.com/r/user_bound_custom-mcp-*"
+  - "https://oauth-redirect.googleusercontent.com/a/user_bound_custom-mcp-*"
+  - "https://oauth-redirect-sandbox.googleusercontent.com/r/user_bound_custom-mcp-*"
+  - "https://oauth-redirect-sandbox.googleusercontent.com/a/user_bound_custom-mcp-*"
+  - "https://oauth-redirect-test.googleusercontent.com/r/user_bound_custom-mcp-*"
+  - "https://oauth-redirect-test.googleusercontent.com/a/user_bound_custom-mcp-*"
 
 mcp_stack_dir: /opt/mcp
-secrets_file: "{{ playbook_dir }}/../secrets/secrets.sops.yaml"

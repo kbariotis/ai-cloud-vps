@@ -5,9 +5,9 @@ variable "name" {
 }
 
 variable "server_type" {
-  description = "Hetzner server type. cax21 = 4 vCPU ARM / 8 GB RAM (~EUR 10.49/mo since 2026-06; check stock in the console)."
+  description = "Hetzner server type. cax11 = 2 vCPU ARM / 4 GB RAM / 40 GB (sized from measured usage; upsize in place by changing this). Stay on ARM: the stack is only tested on arm64."
   type        = string
-  default     = "cax21"
+  default     = "cax11"
 }
 
 variable "location" {
@@ -29,7 +29,7 @@ variable "admin_user" {
 
 variable "ssh_public_key_path" {
   type    = string
-  default = "~/.ssh/id_ed25519.pub"
+  default = "~/.ssh/mcp_vps.pub"
 }
 
 variable "ssh_allowed_cidrs" {

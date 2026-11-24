@@ -1,10 +1,6 @@
 ---
-- name: Validate and reload sshd
-  ansible.builtin.command: sshd -t
-  changed_when: false
-  notify: Reload sshd
-
+# Reload if sshd is running; with socket activation and no daemon running, nothing to do:
+# the next connection starts sshd with the new config.
 - name: Reload sshd
-  ansible.builtin.service:
-    name: ssh
-    state: reloaded
+  ansible.builtin.command: systemctl try-reload-or-restart ssh.service
+  changed_when: true

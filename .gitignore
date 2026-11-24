@@ -8,16 +8,17 @@ infra/.terraform.lock.hcl.bak
 
 # Ansible
 ansible/inventory/hosts.yml
+# Personal settings (domain, emails, repos): the repo is public
+ansible/inventory/host_vars/*
+!ansible/inventory/host_vars/*.example
 ansible/.collections/
 
-# Secrets: only the encrypted file and the template are committed
-secrets/*
-!secrets/secrets.example.yaml
-!secrets/secrets.sops.yaml
+# Secrets never live in the repo (they come from the environment; see deploy.env.example)
+deploy.env
+secrets/
 .env
 .env.*
 !.env.example
-*.decrypted.*
 
 # Python
 __pycache__/

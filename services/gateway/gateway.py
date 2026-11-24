@@ -177,6 +177,27 @@ class SingleUserGoogleProvider(GoogleProvider):
             return None
         return access
 
+    # FastMCP tells a refused client *why* only in the HTTP response (Gemini just says
+    # "redirect URL rejected"), so record what each registration asked for. Redirect URIs
+    # and client ids aren't secrets; %r escapes them so a client can't forge log lines.
+    async def register_client(self, client_info):  # type: ignore[override]
+        uris = [str(u)[:300] for u in (client_info.redirect_uris or [])][:10]
+        meta = (uris, client_info.token_endpoint_auth_method, client_info.application_type)
+        try:
+            await super().register_client(client_info)
+        except Exception as exc:
+            reason = getattr(exc, "error_description", None) or type(exc).__name__
+            log.warning("client registration refused (%r): redirect_uris=%r auth=%r app_type=%r", reason, *meta)
+            raise
+        log.info("client registered: redirect_uris=%r auth=%r app_type=%r", *meta)
+
+    # Covers clients that skip registration (URL client ids / CIMD) or reuse a stale id.
+    async def get_client(self, client_id: str):  # type: ignore[override]
+        client = await super().get_client(client_id)
+        if client is None:
+            log.warning("unknown OAuth client_id %r", client_id[:300])
+        return client
+
 
 def build_server() -> FastMCP:
     app, servers_file = app_servers_file()

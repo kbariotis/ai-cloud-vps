@@ -17,12 +17,31 @@
       - apt-listchanges
     state: present
 
+# Ubuntu 24.04 starts sshd on demand via ssh.socket, so its privilege-separation dir may not
+# exist yet; `sshd -t` refuses to run without it. /run is tmpfs, so ensure it every run.
+- name: sshd privilege separation directory (needed by sshd -t)
+  ansible.builtin.file:
+    path: /run/sshd
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+# Validated before it is installed: with socket activation every new connection reads the
+# config, so a broken file must never land (it would lock us out).
 - name: Harden sshd
   ansible.builtin.template:
     src: sshd-hardening.conf.j2
     dest: /etc/ssh/sshd_config.d/10-hardening.conf
     mode: "0644"
-  notify: Validate and reload sshd
+    validate: /usr/sbin/sshd -t -f %s
+  notify: Reload sshd
+
+# Whole-config check on every run (not only on change), so a handler lost to an earlier
+# failed run can't leave an unvalidated config in place.
+- name: Validate full sshd config
+  ansible.builtin.command: /usr/sbin/sshd -t
+  changed_when: false
 
 - name: Configure unattended upgrades
   ansible.builtin.template:

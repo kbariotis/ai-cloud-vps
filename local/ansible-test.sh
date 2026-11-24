@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Converge the real playbook against a disposable systemd Ubuntu 24.04 container, twice.
-# Uses throwaway SSH + age keys and dummy secrets under local/.tmp (gitignored).
+# Uses a throwaway SSH key under local/.tmp (gitignored) and dummy secrets passed through
+# the same MCP_* env vars a real deploy uses.
 # Usage: local/ansible-test.sh [--keep]
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -10,21 +11,16 @@ NAME=mcp-ansible-target
 PORT=2222
 mkdir -p "$TMP"
 
-# Throwaway keys
+# Throwaway SSH key
 [[ -f $TMP/id_ed25519 ]] || ssh-keygen -q -t ed25519 -N '' -C ansible-test -f "$TMP/id_ed25519"
-[[ -f $TMP/age.txt ]] || age-keygen -o "$TMP/age.txt" 2>/dev/null
 cp "$TMP/id_ed25519.pub" local/ansible-target/authorized_keys
 
-# Dummy secrets, encrypted exactly like the real file
-AGE_PUB=$(grep -o 'age1[0-9a-z]*' "$TMP/age.txt" | head -1)
-cat >"$TMP/secrets.sops.yaml" <<'EOF'
-google_oauth_client_id: dummy.apps.googleusercontent.com
-google_oauth_client_secret: dummy-secret
-github_pat: github_pat_11HARNESSFAKE0harnessfakeharnessfakeharnessfakeharnessfakeharnessfake
-EOF
-echo "gateway_jwt_signing_key: $(openssl rand -hex 32)" >>"$TMP/secrets.sops.yaml"
-printf 'creation_rules:\n  - age: %s\n' "$AGE_PUB" >"$TMP/.sops.yaml" # throwaway rule, not the repo's
-(cd "$TMP" && sops --encrypt --in-place secrets.sops.yaml)
+# Dummy secrets via the real env interface (fixed for both runs so run #2 stays idempotent).
+# The PAT is well-formed but FAKE: it exercises the provider path; GitHub rejects it.
+export MCP_GOOGLE_OAUTH_CLIENT_ID=dummy.apps.googleusercontent.com
+export MCP_GOOGLE_OAUTH_CLIENT_SECRET=dummy-secret
+export MCP_GATEWAY_JWT_SIGNING_KEY=$(openssl rand -hex 32)
+export MCP_GITHUB_PAT=github_pat_11HARNESSFAKE0harnessfakeharnessfakeharnessfakeharnessfakeharnessfake
 
 # Fresh target
 docker rm -f "$NAME" >/dev/null 2>&1 || true
@@ -43,12 +39,15 @@ all:
       ansible_port: $PORT
       ansible_user: ops
       ansible_ssh_private_key_file: $PWD/$TMP/id_ed25519
+      # Fresh container = fresh host keys: use a throwaway known_hosts, never ~/.ssh/known_hosts
+      ansible_ssh_common_args: -o UserKnownHostsFile=$PWD/$TMP/known_hosts
 EOF
+rm -f "$TMP/known_hosts"
 
 run_play() {
-  (cd ansible && SOPS_AGE_KEY_FILE="$PWD/../$TMP/age.txt" ANSIBLE_HOST_KEY_CHECKING=False \
-    ansible-playbook -i "../$TMP/hosts.yml" site.yml \
-    -e "secrets_file=$PWD/../$TMP/secrets.sops.yaml" -e mcp_domain=localhost \
+  (cd ansible && ANSIBLE_HOST_KEY_CHECKING=False \
+    ansible-playbook -i "../$TMP/hosts.yml" site.yml -e mcp_domain=localhost \
+    -e acme_email=dev@harness.invalid -e allowed_email=you@harness.invalid \
     -e '{"sandbox_push_repos": ["octocat/Hello-World"]}' "$@")
 }
 

@@ -111,6 +111,47 @@ async def test_single_user() -> None:
     print("PASS  single-user enforcement (owner allowed; other/no email rejected)")
 
 
+async def test_registration_logging() -> None:
+    import logging
+    from mcp.shared.auth import OAuthClientInformationFull
+
+    with patch.object(gateway, "APPS_DIR", app_dir({})):
+        mcp = gateway.build_server()
+
+    records: list[str] = []
+    handler = logging.Handler()
+    handler.emit = lambda r: records.append(r.getMessage())  # type: ignore[method-assign]
+    gateway.log.addHandler(handler)
+    level = gateway.log.level
+    gateway.log.setLevel(logging.INFO)  # main() configures logging; tests don't run main()
+    try:
+        def info(uri: str) -> OAuthClientInformationFull:
+            return OAuthClientInformationFull(
+                client_id="c1", redirect_uris=[uri], token_endpoint_auth_method="none",
+                grant_types=["authorization_code"], response_types=["code"])
+
+        good = "https://oauth-redirect.googleusercontent.com/r/user_bound_custom-mcp-1-mcp_example_com"
+        await mcp.auth.register_client(info(good))  # Gemini's shape is accepted
+        assert any("client registered" in m and good in m for m in records), records
+
+        bad = "https://evil.example/cb?\nFAKE log line"
+        try:
+            await mcp.auth.register_client(info(bad))
+        except Exception:
+            pass
+        else:
+            raise AssertionError("disallowed redirect URI was registered")
+        refused = [m for m in records if "registration refused" in m]
+        assert refused and "evil.example" in refused[0] and "\n" not in refused[0], refused  # logged, escaped
+
+        assert await mcp.auth.get_client("nope") is None
+        assert any("unknown OAuth client_id 'nope'" in m for m in records), records
+    finally:
+        gateway.log.removeHandler(handler)
+        gateway.log.setLevel(level)
+    print("PASS  registration logging (accepted/refused redirect URIs, unknown client ids; log-injection safe)")
+
+
 async def test_stdio_backend() -> None:
     with patch.object(gateway, "APPS_DIR", app_dir({"time": {"command": "uvx", "args": ["mcp-server-time==2026.11.11"]}})):
         mcp = gateway.build_server()
@@ -262,6 +303,7 @@ if __name__ == "__main__":
     test_insecure_redirect_pattern_rejected()
     test_app_selection()
     asyncio.run(test_single_user())
+    asyncio.run(test_registration_logging())
     asyncio.run(test_stdio_backend())
     test_sandbox_config_and_policy()
     test_sandbox_backend_safety()

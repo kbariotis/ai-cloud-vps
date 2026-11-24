@@ -6,7 +6,7 @@ credentials or network policy. Those come only from deploy-time env:
   OPENSHELL_ENDPOINT, OPENSHELL_TLS_DIR   mTLS connection to the OpenShell gateway
   SANDBOX_IMAGE                           workload image (git, gh, python, node)
   SANDBOX_PUSH_REPOS                      owner/repo,... the sandboxes may push to / open PRs on
-  SANDBOX_MAX (3), SANDBOX_TTL_HOURS (24), SANDBOX_CPU ("2"), SANDBOX_MEMORY ("4Gi")
+  SANDBOX_MAX (2), SANDBOX_TTL_HOURS (24), SANDBOX_CPU ("1"), SANDBOX_MEMORY ("1536Mi")
 """
 
 from __future__ import annotations
@@ -56,10 +56,10 @@ class Settings:
         if not self.image:
             raise OpenShellConfigError("missing SANDBOX_IMAGE")
         self.push_repos = parse_push_repos(os.environ.get("SANDBOX_PUSH_REPOS", ""))
-        self.max_sandboxes = int(os.environ.get("SANDBOX_MAX", "3"))
+        self.max_sandboxes = int(os.environ.get("SANDBOX_MAX", "2"))
         self.ttl_seconds = int(float(os.environ.get("SANDBOX_TTL_HOURS", "24")) * 3600)
-        self.cpu = os.environ.get("SANDBOX_CPU", "2")
-        self.memory = os.environ.get("SANDBOX_MEMORY", "4Gi")
+        self.cpu = os.environ.get("SANDBOX_CPU", "1")
+        self.memory = os.environ.get("SANDBOX_MEMORY", "1536Mi")
         # false when no PAT is configured (openshell-setup then creates no provider).
         self.attach_github = os.environ.get("SANDBOX_ATTACH_GITHUB", "true").strip().lower() == "true"
         self.policy = build_policy(self.push_repos)

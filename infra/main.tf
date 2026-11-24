@@ -66,6 +66,9 @@ resource "hcloud_server" "this" {
   backups            = var.enable_backups
   delete_protection  = var.protect
   rebuild_protection = var.protect
+  # Upsizing keeps the 40 GB disk so the server can always be downsized again
+  # (Hetzner can't shrink a grown disk). Disk is ~20x what the images need.
+  keep_disk = true
 
   public_net {
     ipv4_enabled = true

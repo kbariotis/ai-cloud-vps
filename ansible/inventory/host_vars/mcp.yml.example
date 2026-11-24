@@ -1,0 +1,17 @@
+# cp mcp.yml.example mcp.yml  (gitignored). Personal settings for the `mcp` host; they
+# override the placeholders in group_vars/all.yml. Kept out of the repo because it is public.
+# Loaded only with inventory/hosts.yml, so the local test harness never sees them.
+
+# The MCP subdomain; A/AAAA at your DNS provider (`tofu -chdir=infra output dns_records`),
+# DNS-only (no CDN proxy: Caddy needs 80/443 directly for its certificate).
+mcp_domain: mcp.example.com
+
+# Let's Encrypt account email (Caddy). Expiry/problem notices only.
+acme_email: you@example.com
+
+# The ONE Google account allowed to authorize (the one you use in Gemini).
+allowed_email: you@example.com
+
+# Repos the sandboxes may push branches to and open/update PRs on (owner/repo).
+sandbox_push_repos: []
+#  - your-user/your-repo

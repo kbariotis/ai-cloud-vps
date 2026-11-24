@@ -17,7 +17,7 @@ Reading GitHub from Gemini is covered by Gemini's own read-only GitHub connector
 |---|---|---|
 | Provisioning | OpenTofu + hcloud | `infra/` |
 | Config | Ansible | `ansible/` |
-| Secrets | sops + age | `secrets/secrets.sops.yaml` |
+| Secrets | Environment variables on the deploying machine (e.g. `op run`), never in the repo | `deploy.env.example` |
 | Runtime | Docker Compose | `services/` |
 | Sandboxes | [NVIDIA OpenShell](https://github.com/NVIDIA/OpenShell) 0.1.8 (gateway, SDK and images pinned together) | `services/openshell/`, `services/sandbox-image/`, `services/gateway/sandbox_tools.py` |
 
@@ -25,7 +25,7 @@ Reading GitHub from Gemini is covered by Gemini's own read-only GitHub connector
 
 **Tools** in the `sandbox` app: `sandbox_create`, `sandbox_list`, `sandbox_exec` (bash), `sandbox_write_file`, `sandbox_read_file`, `sandbox_delete`.
 
-**Workload image** (`services/sandbox-image`): Ubuntu 24.04 with git, gh, python3, venv/pip, node/npm and build-essential. Commands run as the unprivileged `ubuntu` user. Limits: 2 CPUs and 4 GiB per sandbox, at most 3 sandboxes, each deleted automatically after 24 h.
+**Workload image** (`services/sandbox-image`): Ubuntu 24.04 with git, gh, python3, venv/pip, node/npm and build-essential. Commands run as the unprivileged `ubuntu` user. Limits: 1 CPU and 1.5 GiB per sandbox, at most 2 sandboxes, each deleted automatically after 24 h. Sized for a CAX11 (4 GB): the stack itself peaks around 330 MiB. For heavy builds, raise `SANDBOX_MEMORY` and lower `SANDBOX_MAX` so their product stays under about 3 GiB, or upsize `server_type`.
 
 **Network** is default-deny. A sandbox can reach only:
 
@@ -46,7 +46,7 @@ Everything else is blocked: other hosts, `curl` to the registries, and writes to
 
 ```bash
 make tools && make deps
-age-keygen -o ~/.config/sops/age/keys.txt   # put the public key in .sops.yaml
+ssh-keygen -t ed25519 -f ~/.ssh/mcp_vps -C mcp-vps   # dedicated admin key (tfvars + inventory point here)
 ```
 
 1. **Google OAuth app.** In Google Cloud console, create an OAuth client of type *Web application* with redirect URI `https://<mcp_domain>/sandbox/auth/callback`.
@@ -54,18 +54,20 @@ age-keygen -o ~/.config/sops/age/keys.txt   # put the public key in .sops.yaml
    - Testing mode is fine long-term. Google only expires refresh tokens after 7 days for apps that request more than openid/email/profile, and the gateway requests only those.
 2. **GitHub PAT.** Create a fine-grained PAT scoped to the repos you'll list in `sandbox_push_repos`, with **Contents: read/write** and **Pull requests: read/write** only (no Workflows, no Administration).
    - Turn on **branch protection for `main`** in those repos, so sandbox work always lands through a PR you merge.
-3. **Secrets.** Put your age public key in `.sops.yaml`, then `cp secrets/secrets.example.yaml secrets/secrets.sops.yaml`, fill in the values, and run `sops -e -i secrets/secrets.sops.yaml`.
+3. **Secrets.** Ansible reads them from the environment as `MCP_GOOGLE_OAUTH_CLIENT_ID`, `MCP_GOOGLE_OAUTH_CLIENT_SECRET`, `MCP_GATEWAY_JWT_SIGNING_KEY` (`openssl rand -hex 32`) and optionally `MCP_GITHUB_PAT`. `make deploy` refuses to start (before opening SSH) if a required one is missing.
+   - Recommended: store them in a 1Password item, `cp deploy.env.example deploy.env` (gitignored, holds only `op://` references), and run `op run --env-file=deploy.env -- make deploy`.
+   - In CI: set the same names as CI secrets.
 4. **Infra.** `cp infra/terraform.tfvars.example infra/terraform.tfvars`, export `HCLOUD_TOKEN`, then run `make infra-init infra-plan infra-apply`. That creates the server and the firewall, with SSH closed.
 5. **DNS (at your current provider).** Add `A` and `AAAA` records for the MCP subdomain (e.g. `mcp`) with the values from `tofu -chdir=infra output dns_records`. Wait until `dig +short mcp.<your-domain>` returns the server IP.
    - Optional hardening: if your provider supports CAA, add `0 issue "letsencrypt.org"` and `0 issue "sectigo.com"` on the subdomain.
-6. **Ansible.** Copy `ansible/inventory/hosts.yml.example` to `hosts.yml` with `tofu -chdir=infra output -raw ipv4`. In `ansible/group_vars/all.yml`, set `mcp_domain: mcp.<your-domain>`, `allowed_email`, `acme_email` and `sandbox_push_repos`, then run `make deploy`.
+6. **Ansible.** Copy `ansible/inventory/hosts.yml.example` to `hosts.yml` with `tofu -chdir=infra output -raw ipv4`. Copy `ansible/inventory/host_vars/mcp.yml.example` to `mcp.yml` and set `mcp_domain: mcp.<your-domain>`, `allowed_email`, `acme_email` and `sandbox_push_repos`. Both files are gitignored, so your domain and emails stay out of the public repo, and the deploy refuses to run while `example.com` placeholders are left. Then run `make deploy`.
    - The deploy opens 22 to your IP, converges, and closes 22.
    - The first deploy pulls about 1.5 GB of images and builds the sandbox image, so allow a few minutes.
 7. **Verify push with the real PAT** (the local tests can only use a fake token). In Gemini, ask the sandbox to clone one of your repos, commit on a branch, push it, and open a PR.
 8. **Gemini.** Go to gemini.google.com → Settings → Connected Apps → Custom apps → *Add a custom app*. Enter `https://<mcp_domain>/sandbox/mcp`, approve the gateway's consent page, sign in with Google, then call `whoami`.
    - Google's help page lists restrictions (personal account, 18+, US, English, history on), but custom connectors work from a personal account in Europe.
-   - If registration fails, check `docker compose logs gw-sandbox` for the redirect URI Gemini used, and adjust `allowed_client_redirect_uris`.
-   - Gemini registers itself automatically (DCR); the gateway also supports client-metadata documents (CIMD). Confidential-client registrations are downgraded to public PKCE clients (allowed by RFC 7591); if Gemini rejects that, this is where to look.
+   - Leave Gemini's *Advanced settings* (client ID/secret) empty. Gemini registers itself (DCR) as a public PKCE client, listing six redirect URIs on three Google hosts; `allowed_client_redirect_uris` allows exactly those.
+   - If Gemini says the redirect URL was rejected, run `make logs`. The gateway logs every refused registration with the URIs it asked for (`client registration refused`).
 
 ## Local testing
 
@@ -104,7 +106,7 @@ Rules for backends:
   - Every API call needs a client certificate from its own CA. Only `gw-sandbox` and the setup job have one, mounted read-only from the `openshell_client` volume.
   - Upstream's default is plaintext with no auth; this setup turns mTLS on.
 - **Sandbox isolation** is OpenShell's: containers with Landlock and seccomp, an unprivileged user, and an L7 policy proxy for all egress. gVisor is installed on the host, but OpenShell's Docker driver doesn't use it.
-- **Secrets** are decrypted only on the controller, then written root-only (0600) to `/opt/mcp/`:
+- **Secrets** never touch the repo. Ansible reads them from the deploying machine's environment and writes them root-only (0600) to `/opt/mcp/`:
   - `.env`: the shared Google client and allowlists
   - `.env.sandbox`: the app's signing key and sandbox settings
   - `.env.openshell-setup`: the PAT
@@ -117,7 +119,7 @@ Rules for backends:
 
 ## Not done yet
 
-- [ ] **First real connect from Gemini.** Confirm Gemini's redirect URI against the allowlist, and that its client accepts the public-client downgrade.
+- [ ] **First real connect from Gemini.** Registration redirect URIs are confirmed (2026-11-24); the login and a `whoami` call still need confirming.
 - [ ] **Real-PAT push check** (deploy step 7). The local tests only prove the policy lets PR creation through and blocks other writes.
 - Note: OAuth client registrations persist on each app's `gw_<app>_data` volume, so restarts don't force a new login.
 - Note: sandboxes are disposable (24 h TTL). Push anything worth keeping.

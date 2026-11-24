@@ -6,7 +6,11 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update \
  && apt-get install -y --no-install-recommends systemd systemd-sysv openssh-server sudo python3 iproute2 iptables kmod \
  && rm -rf /var/lib/apt/lists/* \
- && systemctl enable ssh
+ && systemctl disable ssh.service \
+ && systemctl enable ssh.socket
+# ^ like Ubuntu 24.04 cloud images (Hetzner): sshd is socket-activated, and /run (tmpfs at
+#   runtime) has no /run/sshd until something creates it
+
 
 # Same shape as cloud-init: key-only sudo user, no root login.
 ARG ADMIN_USER=ops
