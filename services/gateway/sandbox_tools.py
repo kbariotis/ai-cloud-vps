@@ -33,6 +33,7 @@ from openshell_common import (
     OpenShellConfigError,
     build_policy,
     client_from_env,
+    details_of,
     parse_push_repos,
     status_of,
 )
@@ -42,7 +43,10 @@ log = logging.getLogger("gateway.sandbox")
 OWNER_LABEL = "managed-by"
 OWNER_VALUE = "mcp-gateway"
 CREATED_LABEL = "mcp-created-at"
-NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,40}$")
+# OpenShell 0.1.8's gateway rejects longer names ("name exceeds maximum length (25 > 19)").
+MAX_NAME = 19
+SUFFIX_LEN = 7  # "-" + 6 hex chars from _slug
+NAME_RE = re.compile(rf"^[a-z0-9][a-z0-9-]{{0,{MAX_NAME - 1}}}$")
 WORKDIR = "/sandbox"
 MAX_OUTPUT = 64 * 1024  # per stream returned to the client
 MAX_WRITE = 1024 * 1024  # OpenShell buffers at most 4 MiB of stdin per exec
@@ -72,9 +76,32 @@ def _truncate(text: str) -> tuple[str, bool]:
     return data[:MAX_OUTPUT].decode(errors="ignore") + "\n…[truncated]", True
 
 
+# OpenShell rejections the caller can fix by changing its request. Their one-line reason is
+# passed to the agent, so it can adapt instead of retrying the same call blindly (a generic
+# error made Gemini loop on create). Everything else (transport, TLS, internal) stays generic:
+# it exposes internals and no change to the request would fix it.
+CLIENT_FIXABLE = {
+    grpc.StatusCode.INVALID_ARGUMENT,
+    grpc.StatusCode.NOT_FOUND,
+    grpc.StatusCode.ALREADY_EXISTS,
+    grpc.StatusCode.RESOURCE_EXHAUSTED,
+    grpc.StatusCode.FAILED_PRECONDITION,
+    grpc.StatusCode.OUT_OF_RANGE,
+}
+
+
+def client_message(fn_name: str, exc: BaseException) -> str:
+    code = status_of(exc)
+    detail = details_of(exc) if code in CLIENT_FIXABLE else ""
+    if code is not None and detail:
+        return f"sandbox {fn_name} rejected ({code.name.lower()}): {detail}"
+    return f"sandbox {fn_name} failed; see gateway logs"
+
+
 def _slug(hint: str | None) -> str:
-    base = re.sub(r"[^a-z0-9-]+", "-", (hint or "box").lower()).strip("-")[:20] or "box"
-    return f"{base}-{secrets.token_hex(3)}"
+    # Base is cut to fit MAX_NAME with the random suffix; rstrip so a cut never leaves "--".
+    base = re.sub(r"[^a-z0-9-]+", "-", (hint or "box").lower()).strip("-")[: MAX_NAME - SUFFIX_LEN].rstrip("-")
+    return f"{base or 'box'}-{secrets.token_hex(3)}"
 
 
 class SandboxBackend:
@@ -203,10 +230,11 @@ def build_sandbox_server(backend: SandboxBackend | None = None) -> FastMCP:
             return await anyio.to_thread.run_sync(partial(getattr(get_backend(), fn_name), *args))
         except ToolError:
             raise
-        except Exception:
-            # Full detail server-side only; the client gets a generic message.
+        except Exception as exc:
+            # Full detail server-side; the client gets OpenShell's reason only for errors it
+            # can fix (client_message), otherwise a generic message.
             log.exception("sandbox %s failed", fn_name)
-            raise ToolError(f"sandbox {fn_name} failed; see gateway logs") from None
+            raise ToolError(client_message(fn_name, exc)) from None
 
     repos = ", ".join(settings.push_repos) or "(none configured)"
     mcp = FastMCP("sandbox")

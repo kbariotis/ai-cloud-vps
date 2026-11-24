@@ -33,9 +33,10 @@ async def main() -> None:
         names = {t.name for t in await c.list_tools()}
         check("tools exposed", {"create", "list", "exec", "write_file", "read_file", "delete"} <= names, str(names))
 
-        box = data(await c.call_tool("create", {"name_hint": "e2e"}))
+        # Long, Gemini-style hint: OpenShell caps names at 19 chars (a 25-char name failed live)
+        box = data(await c.call_tool("create", {"name_hint": "e2e my-website.example feature"}))
         sb = box["sandbox"]
-        check("create", sb.startswith("e2e-"), str(box))
+        check("create (long name hint)", sb.startswith("e2e-my-websi") and len(sb) <= 19, str(box))
 
         async def run(cmd: str, **kw):
             return data(await c.call_tool("exec", {"sandbox": sb, "command": cmd, **kw}))

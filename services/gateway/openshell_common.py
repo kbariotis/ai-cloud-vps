@@ -53,6 +53,17 @@ def status_of(exc: BaseException) -> grpc.StatusCode | None:
     return value if isinstance(value, grpc.StatusCode) else None
 
 
+def details_of(exc: BaseException, limit: int = 200) -> str:
+    """One-line gRPC status message of an SDK error ("" if none). Whitespace collapsed so
+    it can't inject lines into a client-facing message; capped at `limit` chars."""
+    details = getattr(exc, "details", None)
+    try:
+        text = details() if callable(details) else details
+    except Exception:  # noqa: BLE001 - not an RPC error
+        return ""
+    return " ".join(str(text or "").split())[:limit]
+
+
 def client_from_env() -> SandboxClient:
     """mTLS client for the OpenShell gateway (endpoint + cert dir come from env)."""
     endpoint = os.environ.get("OPENSHELL_ENDPOINT", "").strip()

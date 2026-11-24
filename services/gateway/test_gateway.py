@@ -278,6 +278,55 @@ class FakeOpenShell:
         pass
 
 
+def _gateway_error(code_name: str, details: str):
+    import grpc
+    from openshell import GatewayError
+
+    class _E(grpc.RpcError):
+        def code(self):
+            return getattr(grpc.StatusCode, code_name)
+
+        def details(self):
+            return details
+
+    return GatewayError(_E())
+
+
+async def test_sandbox_error_messages() -> None:
+    import sandbox_tools as st
+    from fastmcp.exceptions import ToolError
+
+    msg = st.client_message
+    # Fixable by the caller: OpenShell's reason reaches the agent
+    assert msg("create", _gateway_error("INVALID_ARGUMENT", "name exceeds maximum length (25 > 19)")) == \
+        "sandbox create rejected (invalid_argument): name exceeds maximum length (25 > 19)"
+    # Not fixable / internal: generic, internals (addresses, TLS) stay in the server log
+    for code, detail in [("UNAVAILABLE", "failed to connect to 10.0.0.5:8080: tls handshake"),
+                         ("INTERNAL", "panic at src/driver.rs:42"), ("PERMISSION_DENIED", "client cert CN=x")]:
+        assert msg("exec", _gateway_error(code, detail)) == "sandbox exec failed; see gateway logs", code
+    assert msg("exec", ValueError("boom /etc/secret")) == "sandbox exec failed; see gateway logs"
+    assert msg("exec", _gateway_error("INVALID_ARGUMENT", "")) == "sandbox exec failed; see gateway logs"
+    # Reason is one line and bounded, so it can't smuggle structure into the agent's context
+    m = msg("create", _gateway_error("INVALID_ARGUMENT", "bad\nname\r\n" + "x" * 1000))
+    assert "\n" not in m and "\r" not in m and len(m) < 300, m
+
+    # End to end through the MCP tool, as Gemini sees it
+    class RejectingCreate(FakeOpenShell):
+        def create(self, **kw):
+            raise _gateway_error("INVALID_ARGUMENT", "name exceeds maximum length (25 > 19)")
+
+    with patch.dict(os.environ, {"SANDBOX_PUSH_REPOS": "me/app"}):
+        backend = st.SandboxBackend(st.Settings(), RejectingCreate([]))
+    async with Client(st.build_sandbox_server(backend)) as c:
+        try:
+            await c.call_tool("create", {"name_hint": "x"})
+        except ToolError as exc:
+            assert "name exceeds maximum length" in str(exc), str(exc)
+        else:
+            raise AssertionError("create should have failed")
+    print("PASS  sandbox error messages (fixable reasons surfaced; internals generic; one line, bounded)")
+
+
 def test_sandbox_backend_safety() -> None:
     import time
 
@@ -314,6 +363,12 @@ def test_sandbox_backend_safety() -> None:
     _, _, cmd, kw = fake.calls[-1]
     assert cmd[-1] == "/sandbox/$(id).txt" and "$(id)" not in cmd[2] and kw["stdin"] == b"data"  # argv, not script
 
+    # Names always fit OpenShell's limit and the ownership regex, whatever the hint
+    for hint in ["my-long-website.example feature branch", "a" * 200, "abcdefghijk-------xyz", "!!!", None, "Ünïcødé"]:
+        n = st._slug(hint)
+        assert len(n) <= st.MAX_NAME and st.NAME_RE.fullmatch(n) and "--" not in n, (hint, n)
+    assert st._slug("my-long-website.example feature").startswith("my-long-webs")
+
     created = b.create("My Box!")  # reaps old-1 (expired), then fits under SANDBOX_MAX=2
     assert ("delete", "old-1") in fake.calls and created["sandbox"].startswith("my-box-")
     spec = [c for c in fake.calls if c[0] == "create"][-1][1]["spec"]
@@ -334,4 +389,5 @@ if __name__ == "__main__":
     asyncio.run(test_stdio_backend())
     test_sandbox_config_and_policy()
     test_sandbox_backend_safety()
+    asyncio.run(test_sandbox_error_messages())
     print("ALL GATEWAY TESTS PASSED")
